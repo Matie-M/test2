@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DeployHub - Instant GitHub Deployments</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        .font-mono {
+            font-family: 'Roboto Mono', monospace;
+        }
+        .modal-enter {
+            animation: fadeIn 0.3s ease-out;
+        }
+        .modal-leave {
+            animation: fadeOut 0.3s ease-in;
+        }
+        .toast-enter {
+            animation: slideInUp 0.5s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+        }
+        .toast-leave {
+            animation: slideOutDown 0.5s cubic-bezier(0.55, 0.085, 0.68, 0.53);
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: scale(0.95); }
+            to { opacity: 1; transform: scale(1); }
+        }
+        @keyframes fadeOut {
+            from { opacity: 1; transform: scale(1); }
+            to { opacity: 0; transform: scale(0.95); }
+        }
+        @keyframes slideInUp {
+            from { transform: translateY(100%); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+        @keyframes slideOutDown {
+            from { transform: translateY(0); opacity: 1; }
+            to { transform: translateY(100%); opacity: 0; }
+        }
+        .spinner {
+            border-color: transparent;
+            border-top-color: currentColor;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-gray-50 dark:bg-gray-900 text-gray-800 dark:text-gray-200">
+    <div id="app"></div>
+    <div id="toast-container" class="fixed bottom-0 right-0 p-8 space-y-4 z-50 w-full max-w-sm"></div>
+
+    <script type="module">
+        // --- MOCK DATA ---
+        const mockUser = {
+            name: 'dev-user',
+            avatarUrl: 'https://placehold.co/100x100/7c3aed/ffffff?text=DU'
+        };
+
+        const mockRepositories = [
+            { id: 1, name: 'personal-portfolio', description: 'My personal portfolio website built with React and Tailwind CSS.', visibility: 'Public', language: 'JavaScript', lastUpdated: '2025-10-02T10:00:00Z', defaultBranch: 'main' },
+            { id: 2, name: 'data-viz-project', description: 'A D3.js project for visualizing complex datasets.', visibility: 'Public', language: 'JavaScript', lastUpdated: '2025-09-28T14:30:00Z', defaultBranch: 'main' },
+            { id: 3, name: 'api-gateway', description: 'A secure and scalable API gateway for microservices.', visibility: 'Private', language: 'Python', lastUpdated: '2025-09-25T09:15:00Z', defaultBranch: 'master' },
+            { id: 4, name: 'mobile-app-backend', description: 'Firebase backend for a new cross-platform mobile app.', visibility: 'Private', language: 'TypeScript', lastUpdated: '2025-10-01T18:45:00Z', defaultBranch: 'main' },
+            { id: 5, name: 'dotfiles', description: 'My personal dotfiles for development environment setup.', visibility: 'Public', language: 'Shell', lastUpdated: '2025-08-15T11:00:00Z', defaultBranch: 'main' },
+            { id: 6, name: 'game-engine', description: 'A simple 2D game engine written in C++.', visibility: 'Private', language: 'C++', lastUpdated: '2025-09-30T22:00:00Z', defaultBranch: 'develop' },
+            { id: 7, name: 'blog-cms', description: 'A headless CMS for a personal blog, built with Node.js and GraphQL.', visibility: 'Public', language: 'JavaScript', lastUpdated: '2025-09-12T16:20:00Z', defaultBranch: 'main' },
+            { id: 8, name: 'machine-learning-model', description: 'A repository for training and deploying a sentiment analysis model.', visibility: 'Private', language: 'Python', lastUpdated: '2025-10-03T01:55:00Z', defaultBranch: 'main' },
+        ];
+
+        // --- APPLICATION STATE ---
+        let state = {
+            // 'landing', 'dashboard'
+            view: 'landing',
+            user: null,
+            // 'repositories', 'deployments'
+            dashboardTab: 'repositories',
+            repositories: [],
+            deployments: [],
+            searchQuery: '',
+            deploymentFilter: 'All Deployments',
+            // 'none', 'deploySettings', 'preview', 'deleteConfirm'
+            modal: 'none',
+            modalData: {},
+            toastCounter: 0,
+        };
+
+        // --- DOM ELEMENTS ---
+        const app = document.getElementById('app');
+
+        // --- STATE MANAGEMENT & RENDERING ---
+        function setState(newState) {
+            state = { ...state, ...newState };
+            window.requestAnimationFrame(() => {
+                render();
+            });
+        }
+
+        // --- HELPER FUNCTIONS ---
+        const formatTimeAgo = (dateString) => {
+            const date = new Date(dateString);
+            const seconds = Math.floor((new Date() - date) / 1000);
+            let interval = seconds / 31536000;
+            if (interval > 1) return Math.floor(interval) + " years ago";
+            interval = seconds / 2592000;
+            if (interval > 1) return Math.floor(interval) + " months ago";
+            interval = seconds / 86400;
+            if (interval > 1) return Math.floor(interval) + " days ago";
+            interval = seconds / 3600;
+            if (interval > 1) return Math.floor(interval) + " hours ago";
+            interval = seconds / 60;
+            if (interval > 1) return Math.floor(interval) + " minutes ago";
+            return Math.floor(seconds) + " seconds ago";
+        };
+
+        // --- TOAST NOTIFICATIONS ---
+        function showToast(message, type = 'info') {
+            const toastContainer = document.getElementById('toast-container');
+            const id = `toast-${state.toastCounter}`;
+            setState({ toastCounter: state.toastCounter + 1 });
+
+            const colors = {
+                success: 'bg-green-500',
+                error: 'bg-red-500',
+                info: 'bg-blue-500',
+            };
+
+            const toast = document.createElement('div');
+            toast.id = id;
+            toast.className = `toast-enter text-white px-6 py-4 rounded-lg shadow-lg text-sm ${colors[type]}`;
+            toast.textContent = message;
+            toastContainer.appendChild(toast);
+
+            setTimeout(() => {
+                toast.classList.remove('toast-enter');
+                toast.classList.add('toast-leave');
+                toast.addEventListener('animationend', () => toast.remove());
+            }, 3000);
+        }
+
+        // --- COMPONENTS / VIEWS ---
+
+        const HeroIcon = (path, classes = "w-6 h-6") => `
+            <svg xmlns="http://www.w3.org/2000/svg" class="${classes}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="${path}" />
+            </svg>`;
+        
+        const Icons = {
+            github: `<svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path fill-rule="evenodd" d="M12 2C6.477 2 2 6.477 2 12c0 4.418 2.865 8.168 6.839 9.49.5.092.682-.217.682-.482 0-.237-.009-.868-.014-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.031-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.203 2.398.1 2.651.64.7 1.03 1.595 1.03 2.688 0 3.848-2.338 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.001 10.001 0 0022 12c0-5.523-4.477-10-10-10z" clip-rule="evenodd" /></svg>`,
+            logout: HeroIcon('M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1'),
+            search: HeroIcon('M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z'),
+            repo: HeroIcon('M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15'),
+            deployments: HeroIcon('M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4'),
+            externalLink: HeroIcon('M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14'),
+            copy: HeroIcon('M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z'),
+            close: HeroIcon('M6 18L18 6M6 6l12 12'),
+            plus: HeroIcon('M12 4v16m8-8H4', 'w-5 h-5'),
+            trash: HeroIcon('M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16'),
+            chevronDown: HeroIcon('M19 9l-7 7-7-7'),
+            desktop: HeroIcon('M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z'),
+            tablet: HeroIcon('M12 4.75L18.25 3l-1.5 18L5.75 21l1.5-18L12 4.75zM9.75 5.5h4.5M9 18h6'),
+            mobile: HeroIcon('M12 2.25c.414 0 .75.336.75.75v18a.75.75 0 01-1.5 0v-18c0-.414.336-.75.75-.75zM9 4.5h6'),
+        };
+
+        function renderLandingPage() {
+            return `
+                <div class="min-h-screen flex flex-col">
+                    <header class="p-4 sm:px-8">
+                        <nav class="flex justify-between items-center">
+                            <h1 class="text-2xl font-bold text-gray-900 dark:text-white">DeployHub</h1>
+                            <button data-action="auth" class="bg-gray-800 dark:bg-gray-700 text-white font-medium py-2 px-4 rounded-lg hover:bg-gray-700 dark:hover:bg-gray-600 transition-colors">Sign In</button>
+                        </nav>
+                    </header>
+                    <main class="flex-grow flex items-center justify-center text-center p-4">
+                        <div class="max-w-3xl">
+                            <h2 class="text-4xl sm:text-6xl font-extrabold text-gray-900 dark:text-white leading-tight mb-4">
+                                Deploy your GitHub repositories instantly.
+                            </h2>
+                            <p class="text-lg sm:text-xl text-gray-600 dark:text-gray-300 mb-8">
+                                Connect your GitHub, select a repository, and get a live preview URL in seconds. No complex configuration needed.
+                            </p>
+                            <button data-action="auth" class="bg-purple-600 text-white font-bold py-4 px-8 rounded-lg text-lg hover:bg-purple-700 transition-all transform hover:scale-105 inline-flex items-center space-x-2">
+                                ${Icons.github}
+                                <span>Sign Up with GitHub</span>
+                            </button>
+                        </div>
+                    </main>
+                    <footer class="p-4 text-center text-gray-500 dark:text-gray-400">
+                        <p>&copy; ${new Date().getFullYear()} DeployHub. All rights reserved.</p>
+                    </footer>
+                </div>
+            `;
+        }
+
+        function renderDashboard() {
+            const tabContent = state.dashboardTab === 'repositories' ? renderRepositoriesTab() : renderDeploymentsTab();
+            return `
+                <div class="min-h-screen flex">
+                    <!-- Sidebar -->
+                    <aside class="w-64 bg-white dark:bg-gray-800/50 p-6 flex-shrink-0 flex flex-col">
+                         <h1 class="text-2xl font-bold text-gray-900 dark:text-white mb-8">DeployHub</h1>
+                        <nav class="space-y-2">
+                            ${renderSidebarButton('repositories', Icons.repo, 'Repositories')}
+                            ${renderSidebarButton('deployments', Icons.deployments, 'Deployments')}
+                        </nav>
+                        <div class="mt-auto">
+                            <div class="flex items-center space-x-3 border-t dark:border-gray-700 pt-4">
+                                <img src="${state.user.avatarUrl}" alt="User Avatar" class="w-10 h-10 rounded-full">
+                                <div>
+                                    <p class="font-semibold text-sm">${state.user.name}</p>
+                                    <button data-action="logout" class="text-xs text-gray-500 hover:text-red-500 transition-colors">Sign Out</button>
+                                </div>
+                            </div>
+                        </div>
+                    </aside>
+
+                    <!-- Main Content -->
+                    <main class="flex-grow p-8 bg-gray-50 dark:bg-gray-900 overflow-y-auto">
+                        ${tabContent}
+                    </main>
+                </div>
+                ${renderModals()}
+            `;
+        }
+
+        function renderSidebarButton(tabName, icon, text) {
+            const isActive = state.dashboardTab === tabName;
+            return `
+                <button data-action="switchTab" data-tab="${tabName}" class="w-full flex items-center space-x-3 px-4 py-2 rounded-lg font-medium transition-colors ${isActive ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/50 dark:text-purple-300' : 'hover:bg-gray-100 dark:hover:bg-gray-700'}">
+                    ${icon}
+                    <span>${text}</span>
+                </button>
+            `;
+        }
+        
+        // --- REPOSITORIES TAB ---
+        function renderRepositoriesTab() {
+            const filteredRepos = state.repositories.filter(repo => repo.name.toLowerCase().includes(state.searchQuery.toLowerCase()));
+            
+            return `
+                <div class="max-w-7xl mx-auto">
+                    <h2 class="text-3xl font-bold mb-6">Repositories</h2>
+                    <div class="relative mb-6">
+                        <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">${Icons.search}</div>
+                        <input type="text" id="repo-search" placeholder="Search repositories..." value="${state.searchQuery}" class="w-full pl-10 pr-4 py-2 border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 focus:ring-purple-500 focus:border-purple-500">
+                    </div>
+                    ${filteredRepos.length > 0 ? `
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                        ${filteredRepos.map(renderRepoCard).join('')}
+                    </div>` : renderEmptyState('No repositories found', 'Create a repository on GitHub to get started.')}
+                </div>`;
+        }
+
+        function renderRepoCard(repo) {
+            const languageColor = {
+                'JavaScript': 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-300',
+                'Python': 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300',
+                'TypeScript': 'bg-sky-100 text-sky-800 dark:bg-sky-900 dark:text-sky-300',
+                'Shell': 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300',
+                'C++': 'bg-pink-100 text-pink-800 dark:bg-pink-900 dark:text-pink-300',
+            }[repo.language] || 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300';
+
+            return `
+                <div class="bg-white dark:bg-gray-800 rounded-lg shadow-md p-6 flex flex-col transition-all hover:shadow-lg hover:scale-105">
+                    <div class="flex-grow">
+                        <div class="flex justify-between items-start mb-2">
+                            <h3 class="font-bold text-lg text-purple-600 dark:text-purple-400 truncate">${repo.name}</h3>
+                            <span class="text-xs font-semibold px-2 py-1 rounded-full ${repo.visibility === 'Public' ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300' : 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-300'}">${repo.visibility}</span>
+                        </div>
+                        <p class="text-sm text-gray-600 dark:text-gray-400 mb-4 h-10 overflow-hidden">${repo.description}</p>
+                    </div>
+                    <div class="text-xs text-gray-500 dark:text-gray-400 mb-4 flex justify-between items-center">
+                        <span class="px-2 py-1 rounded ${languageColor}">${repo.language}</span>
+                        <span>Updated ${formatTimeAgo(repo.lastUpdated)}</span>
+                    </div>
+                    <button data-action="openDeployModal" data-repo-id="${repo.id}" class="w-full bg-purple-600 text-white font-semibold py-2 px-4 rounded-lg hover:bg-purple-700 transition-colors">Deploy</button>
+                </div>`;
+        }
+        
+        // --- DEPLOYMENTS TAB ---
+        function renderDeploymentsTab() {
+            let deployments = [...state.deployments].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+            if (state.deploymentFilter !== 'All Deployments') {
+                deployments = deployments.filter(d => d.status === state.deploymentFilter);
+            }
+
+             return `
+                <div class="max-w-7xl mx-auto">
+                    <div class="flex justify-between items-center mb-6">
+                        <h2 class="text-3xl font-bold">Deployments</h2>
+                        <div class="flex space-x-2 p-1 bg-gray-200 dark:bg-gray-700 rounded-lg">
+                            ${renderFilterButton('All Deployments')}
+                            ${renderFilterButton('Live')}
+                            ${renderFilterButton('Building')}
+                            ${renderFilterButton('Failed')}
+                        </div>
+                    </div>
+                    ${deployments.length > 0 ? `
+                    <div class="space-y-4">
+                        ${deployments.map(renderDeploymentCard).join('')}
+                    </div>` : renderEmptyState('No deployments yet', 'Deploy your first repository from the Repositories tab.')}
+                </div>`;
+        }
+
+        function renderFilterButton(filter) {
+            const isActive = state.deploymentFilter === filter;
+            return `<button data-action="filterDeployments" data-filter="${filter}" class="px-3 py-1 text-sm font-semibold rounded-md transition-colors ${isActive ? 'bg-white dark:bg-gray-800 text-purple-700 dark:text-purple-300 shadow-sm' : 'text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200'}">${filter}</button>`;
+        }
+
+        function renderDeploymentCard(deployment) {
+            const statusInfo = {
+                Live: { color: 'green', text: 'Live', icon: `<div class="w-2 h-2 rounded-full bg-green-500"></div>` },
+                Building: { color: 'blue', text: 'Building', icon: `<div class="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></div>` },
+                Failed: { color: 'red', text: 'Failed', icon: `<div class="w-2 h-2 rounded-full bg-red-500"></div>` },
+            }[deployment.status];
+
+            return `
+                <div class="bg-white dark:bg-gray-800 rounded-lg shadow-md p-4 flex items-center justify-between">
+                    <div class="flex items-center space-x-4">
+                        <div class="w-32 h-20 bg-gray-200 dark:bg-gray-700 rounded-md flex items-center justify-center">
+                            <span class="text-xs text-gray-500">Preview</span>
+                        </div>
+                        <div>
+                            <h4 class="font-bold">${deployment.repoName}</h4>
+                            <p class="text-sm text-gray-500 dark:text-gray-400">${deployment.branch} &bull; ${formatTimeAgo(deployment.timestamp)}</p>
+                            <div class="flex items-center space-x-2 mt-1 text-sm font-medium text-${statusInfo.color}-600 dark:text-${statusInfo.color}-400">
+                                ${statusInfo.icon}
+                                <span>${statusInfo.text}</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                        ${deployment.status === 'Live' ? `<button data-action="openPreviewModal" data-deployment-id="${deployment.id}" class="bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 font-semibold py-2 px-4 rounded-lg transition-colors text-sm">View Preview</button>` : ''}
+                        <button data-action="redeploy" data-deployment-id="${deployment.id}" class="bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 font-semibold py-2 px-4 rounded-lg transition-colors text-sm">Redeploy</button>
+                        <button data-action="openDeleteConfirm" data-deployment-id="${deployment.id}" class="text-gray-400 hover:text-red-500 p-2 rounded-full transition-colors">${Icons.trash}</button>
+                    </div>
+                </div>`;
+        }
+        
+        function renderEmptyState(title, subtitle) {
+            return `
+                <div class="text-center py-20 border-2 border-dashed dark:border-gray-700 rounded-lg">
+                    <h3 class="text-xl font-semibold mb-2">${title}</h3>
+                    <p class="text-gray-500">${subtitle}</p>
+                </div>
+            `;
+        }
+
+        // --- MODALS ---
+        function renderModals() {
+            switch(state.modal) {
+                case 'deploySettings':
+                    return renderDeploySettingsModal();
+                case 'preview':
+                    return renderPreviewModal();
+                case 'deleteConfirm':
+                    return renderDeleteConfirmModal();
+                default:
+                    return '';
+            }
+        }
+
+        function renderDeploySettingsModal() {
+            const repo = state.modalData.repo;
+            return `
+                <div class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-40 modal-enter" data-action="closeModal">
+                    <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full max-w-2xl p-8" onclick="event.stopPropagation()">
+                        <div class="flex justify-between items-center mb-6">
+                            <h3 class="text-2xl font-bold">Deploy ${repo.name}</h3>
+                            <button data-action="closeModal" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">${Icons.close}</button>
+                        </div>
+                        <form id="deploy-form">
+                            <div class="space-y-6">
+                                <div>
+                                    <label for="branch" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Branch</label>
+                                    <select id="branch" name="branch" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:outline-none focus:ring-purple-500 focus:border-purple-500 sm:text-sm rounded-md">
+                                        <option>${repo.defaultBranch}</option>
+                                        <option>feature/new-design</option>
+                                        <option>bugfix/login-issue</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label for="build-command" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Build Command</label>
+                                    <input type="text" id="build-command" value="npm run build" class="mt-1 block w-full font-mono text-sm border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 rounded-md shadow-sm focus:ring-purple-500 focus:border-purple-500">
+                                </div>
+                                 <div>
+                                    <label for="output-dir" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Output Directory</label>
+                                    <input type="text" id="output-dir" value="dist" class="mt-1 block w-full font-mono text-sm border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 rounded-md shadow-sm focus:ring-purple-500 focus:border-purple-500">
+                                </div>
+                            </div>
+                            <div class="mt-8 flex justify-end space-x-4">
+                                <button type="button" data-action="closeModal" class="bg-gray-200 dark:bg-gray-600 hover:bg-gray-300 dark:hover:bg-gray-500 font-semibold py-2 px-4 rounded-lg transition-colors">Cancel</button>
+                                <button type="submit" class="bg-purple-600 text-white font-semibold py-2 px-4 rounded-lg hover:bg-purple-700 transition-colors">Deploy Now</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            `;
+        }
+        
+        function renderPreviewModal() {
+            const { url } = state.modalData;
+            return `
+                <div class="fixed inset-0 bg-black bg-opacity-75 flex flex-col z-40 modal-enter p-4 sm:p-8" data-action="closeModal">
+                    <header class="bg-gray-800 rounded-t-lg p-3 flex justify-between items-center flex-shrink-0">
+                        <div class="flex items-center space-x-4">
+                             <div class="flex space-x-1">
+                                <button data-action="setPreviewSize" data-width="100%" class="p-2 rounded hover:bg-gray-700">${Icons.desktop}</button>
+                                <button data-action="setPreviewSize" data-width="768px" class="p-2 rounded hover:bg-gray-700">${Icons.tablet}</button>
+                                <button data-action="setPreviewSize" data-width="375px" class="p-2 rounded hover:bg-gray-700">${Icons.mobile}</button>
+                            </div>
+                            <input type="text" readonly value="${url}" class="bg-gray-700 text-gray-300 rounded px-2 py-1 text-sm font-mono w-72">
+                            <button data-action="copyUrl" data-url="${url}" class="p-2 rounded hover:bg-gray-700">${Icons.copy}</button>
+                            <a href="${url}" target="_blank" class="p-2 rounded hover:bg-gray-700">${Icons.externalLink}</a>
+                        </div>
+                        <button data-action="closeModal" class="p-2 rounded-full hover:bg-gray-700">${Icons.close}</button>
+                    </header>
+                    <main class="flex-grow bg-white flex items-center justify-center rounded-b-lg overflow-hidden">
+                        <iframe id="preview-frame" src="https://placehold.co/1920x1080/f3e8ff/7c3aed?text=Live+Preview" class="w-full h-full border-0 transition-all duration-300 ease-in-out" style="max-width: 100%;"></iframe>
+                    </main>
+                </div>
+            `;
+        }
+
+        function renderDeleteConfirmModal() {
+            const deployment = state.modalData.deployment;
+            return `
+                <div class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-40 modal-enter" data-action="closeModal">
+                    <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full max-w-md p-6" onclick="event.stopPropagation()">
+                        <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Delete Deployment</h3>
+                        <div class="mt-2">
+                            <p class="text-sm text-gray-500 dark:text-gray-400">
+                                Are you sure you want to delete the deployment for <span class="font-semibold">${deployment.repoName}</span>? This action cannot be undone.
+                            </p>
+                        </div>
+                        <div class="mt-6 flex justify-end space-x-3">
+                            <button type="button" data-action="closeModal" class="bg-gray-200 dark:bg-gray-600 hover:bg-gray-300 dark:hover:bg-gray-500 font-semibold py-2 px-4 rounded-lg transition-colors text-sm">Cancel</button>
+                            <button type="button" data-action="confirmDelete" data-deployment-id="${deployment.id}" class="bg-red-600 text-white font-semibold py-2 px-4 rounded-lg hover:bg-red-700 transition-colors text-sm">Delete</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // --- MAIN RENDER FUNCTION ---
+        function render() {
+            if (state.view === 'landing') {
+                app.innerHTML = renderLandingPage();
+            } else if (state.view === 'dashboard') {
+                app.innerHTML = renderDashboard();
+            }
+
+            // Re-attach listeners for dynamic content
+            document.querySelector('#repo-search')?.addEventListener('input', handleSearch);
+            document.querySelector('#deploy-form')?.addEventListener('submit', handleDeploy);
+        }
+
+        // --- EVENT HANDLERS ---
+        function handleAuth() {
+            setState({ view: 'dashboard', user: mockUser, repositories: mockRepositories });
+        }
+
+        function handleLogout() {
+            setState({ view: 'landing', user: null, deployments: [] });
+        }
+        
+        function handleSwitchTab(e) {
+            setState({ dashboardTab: e.target.closest('[data-tab]').dataset.tab });
+        }
+
+        function handleSearch(e) {
+            setState({ searchQuery: e.target.value });
+        }
+
+        function handleOpenDeployModal(e) {
+            const repoId = parseInt(e.target.closest('[data-repo-id]').dataset.repoId);
+            const repo = state.repositories.find(r => r.id === repoId);
+            setState({ modal: 'deploySettings', modalData: { repo } });
+        }
+
+        function handleDeploy(e) {
+            e.preventDefault();
+            const repo = state.modalData.repo;
+            const branch = document.getElementById('branch').value;
+            
+            const newDeployment = {
+                id: Date.now(),
+                repoId: repo.id,
+                repoName: repo.name,
+                branch: branch,
+                status: 'Building',
+                timestamp: new Date().toISOString(),
+                url: null,
+            };
+
+            setState({ deployments: [newDeployment, ...state.deployments], modal: 'none' });
+            showToast(`Deployment started for ${repo.name}`, 'info');
+
+            // Simulate deployment process
+            setTimeout(() => {
+                const isSuccess = Math.random() > 0.2; // 80% success rate
+                setState({
+                    deployments: state.deployments.map(d => 
+                        d.id === newDeployment.id ? { 
+                            ...d, 
+                            status: isSuccess ? 'Live' : 'Failed',
+                            url: isSuccess ? `https://${repo.name}-${d.id.toString().slice(-6)}.deployhub.dev` : null
+                        } : d
+                    )
+                });
+                showToast(
+                    isSuccess ? `Deployment successful! Your app is live.` : `Deployment failed. Check logs for details.`,
+                    isSuccess ? 'success' : 'error'
+                );
+            }, 5000);
+        }
+
+        function handleRedeploy(e) {
+            const deploymentId = parseInt(e.target.closest('[data-deployment-id]').dataset.deploymentId);
+            const oldDeployment = state.deployments.find(d => d.id === deploymentId);
+            const repo = state.repositories.find(r => r.id === oldDeployment.repoId);
+            
+             const newDeployment = {
+                id: Date.now(),
+                repoId: repo.id,
+                repoName: repo.name,
+                branch: oldDeployment.branch,
+                status: 'Building',
+                timestamp: new Date().toISOString(),
+                url: null,
+            };
+
+            setState({ deployments: [newDeployment, ...state.deployments] });
+            showToast(`Redeployment started for ${repo.name}`, 'info');
+
+            setTimeout(() => {
+                const isSuccess = Math.random() > 0.2;
+                setState({
+                    deployments: state.deployments.map(d => 
+                        d.id === newDeployment.id ? { 
+                            ...d, 
+                            status: isSuccess ? 'Live' : 'Failed',
+                            url: isSuccess ? `https://${repo.name}-${d.id.toString().slice(-6)}.deployhub.dev` : null
+                        } : d
+                    )
+                });
+                showToast(
+                    isSuccess ? `Redeployment successful!` : `Redeployment failed.`,
+                    isSuccess ? 'success' : 'error'
+                );
+            }, 4000);
+        }
+        
+        function handleFilterDeployments(e) {
+            setState({ deploymentFilter: e.target.closest('[data-filter]').dataset.filter });
+        }
+
+        function handleOpenPreviewModal(e) {
+            const deploymentId = parseInt(e.target.closest('[data-deployment-id]').dataset.deploymentId);
+            const deployment = state.deployments.find(d => d.id === deploymentId);
+            setState({ modal: 'preview', modalData: { url: deployment.url } });
+        }
+        
+        function handleOpenDeleteConfirm(e) {
+            const deploymentId = parseInt(e.target.closest('[data-deployment-id]').dataset.deploymentId);
+            const deployment = state.deployments.find(d => d.id === deploymentId);
+            setState({ modal: 'deleteConfirm', modalData: { deployment } });
+        }
+        
+        function handleConfirmDelete(e) {
+            const deploymentId = parseInt(e.target.closest('[data-deployment-id]').dataset.deploymentId);
+            setState({
+                deployments: state.deployments.filter(d => d.id !== deploymentId),
+                modal: 'none'
+            });
+            showToast('Deployment deleted.', 'info');
+        }
+
+        function handleSetPreviewSize(e) {
+            const width = e.target.closest('[data-width]').dataset.width;
+            document.getElementById('preview-frame').style.maxWidth = width;
+        }
+        
+        function handleCopyUrl(e) {
+            const url = e.target.closest('[data-url]').dataset.url;
+            navigator.clipboard.writeText(url).then(() => {
+                showToast('URL copied to clipboard!', 'success');
+            });
+        }
+        
+        function handleCloseModal(e) {
+            // Close if background is clicked
+            if (e.target === e.currentTarget) {
+                 setState({ modal: 'none', modalData: {} });
+            }
+        }
+
+        // --- GLOBAL EVENT LISTENER ---
+        document.addEventListener('click', (e) => {
+            const action = e.target.closest('[data-action]');
+            if (!action) return;
+
+            const actionName = action.dataset.action;
+            switch(actionName) {
+                case 'auth': handleAuth(); break;
+                case 'logout': handleLogout(); break;
+                case 'switchTab': handleSwitchTab(e); break;
+                case 'openDeployModal': handleOpenDeployModal(e); break;
+                case 'closeModal': handleCloseModal(e); break;
+                case 'redeploy': handleRedeploy(e); break;
+                case 'filterDeployments': handleFilterDeployments(e); break;
+                case 'openPreviewModal': handleOpenPreviewModal(e); break;
+                case 'openDeleteConfirm': handleOpenDeleteConfirm(e); break;
+                case 'confirmDelete': handleConfirmDelete(e); break;
+                case 'setPreviewSize': handleSetPreviewSize(e); break;
+                case 'copyUrl': handleCopyUrl(e); break;
+            }
+        });
+
+        // --- INITIALIZATION ---
+        render();
+    </script>
+</body>
+</html>
